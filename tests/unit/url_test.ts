@@ -453,6 +453,37 @@ Deno.test(function urlBase() {
   assertEquals(new URL("/foo", "abcd:/").href, "abcd:/foo");
 });
 
+Deno.test(function urlBaseExcessLeadingSeparators() {
+  const cases = [
+    ["///test", "test/"],
+    ["////test", "test/"],
+    ["/////test", "test/"],
+    ["///\\//\\//test", "test/"],
+    [" \t///test ", "test/"],
+    ["///example.org/../path", "example.org/path"],
+    ["///[::1]:88/path", "[::1]:88/path"],
+    ["///user:pass@foo:90/path", "user:pass@foo:90/path"],
+  ] as const;
+
+  for (const scheme of ["http", "https", "ftp", "ws", "wss"]) {
+    const base = scheme + "://example.org/a/b";
+    for (const [ref, authorityAndPath] of cases) {
+      const expected = scheme + "://" + authorityAndPath;
+      assertEquals(new URL(ref, base).href, expected);
+      assertEquals(URL.parse(ref, base)?.href, expected);
+      assertStrictEquals(URL.canParse(ref, base), true);
+    }
+  }
+
+  assertEquals(new URL("///test", "file:///tmp/a").href, "file:///test");
+  assertEquals(new URL("///test", "custom://foo/a").href, "custom:///test");
+  assertThrows(
+    () => new URL("///", "http://example.org/a"),
+    TypeError,
+    "Invalid URL",
+  );
+});
+
 Deno.test(function urlDriveLetterBase() {
   assertEquals(new URL("/b", "file:///C:/a/b").href, "file:///C:/b");
   assertEquals(new URL("/D:", "file:///C:/a/b").href, "file:///D:");

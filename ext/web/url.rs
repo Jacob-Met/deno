@@ -84,7 +84,10 @@ fn parse_url(
   base_href: Option<&Url>,
   buf: &mut [u32],
 ) -> u32 {
-  match Url::options().base_url(base_href).parse(href) {
+  let normalized = base_href
+    .and_then(|base| normalize_network_authority_reference(href, base));
+  let href_to_parse = normalized.as_deref().unwrap_or(href);
+  match Url::options().base_url(base_href).parse(href_to_parse) {
     Ok(url) => {
       let inner_url = quirks::internal_components(&url);
 
@@ -106,6 +109,30 @@ fn parse_url(
     }
     Err(_) => ParseStatus::Err as u32,
   }
+}
+
+// The WHATWG parser treats three or more leading '/' or '\\' characters
+// as a network-path reference for non-file special schemes. rust-url rejects
+// these references, even though the equivalent '//host' parses correctly.
+fn normalize_network_authority_reference(
+  href: &str,
+  base: &Url,
+) -> Option<String> {
+  if !matches!(base.scheme(), "ftp" | "http" | "https" | "ws" | "wss") {
+    return None;
+  }
+
+  // URL parsing removes leading C0 controls and spaces.
+  let input = href.trim_start_matches(|c| c <= '\u{20}');
+  let separators = input
+    .bytes()
+    .take_while(|b| *b == b'/' || *b == b'\\')
+    .count();
+  if separators < 3 {
+    return None;
+  }
+
+  Some(format!("//{}", &input[separators..]))
 }
 
 // Keep in sync with parseSimpleSpecialUrl() in ext/web/00_url.js.
