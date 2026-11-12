@@ -281,6 +281,28 @@ for (
   });
 }
 
+Deno.test("DH key export as SPKI and PKCS8 can be imported", () => {
+  const { publicKey, privateKey } = generateKeyPairSync("dh", {
+    group: "modp14",
+  });
+
+  const spki = publicKey.export({ type: "spki", format: "pem" });
+  const pkcs8 = privateKey.export({ type: "pkcs8", format: "pem" });
+
+  const restoredPublicKey = createPublicKey(spki);
+  const restoredPrivateKey = createPrivateKey(pkcs8);
+  assertEquals(restoredPublicKey.asymmetricKeyType, "dh");
+  assertEquals(restoredPrivateKey.asymmetricKeyType, "dh");
+  assertEquals(
+    restoredPublicKey.export({ type: "spki", format: "pem" }),
+    spki,
+  );
+  assertEquals(
+    restoredPrivateKey.export({ type: "pkcs8", format: "pem" }),
+    pkcs8,
+  );
+});
+
 const primeLengths = RUN_SLOW_TESTS ? [1024, 2048, 4096] : [1024];
 
 for (const primeLength of primeLengths) {

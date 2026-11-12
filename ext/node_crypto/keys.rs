@@ -43,7 +43,6 @@ use rsa::traits::PrivateKeyParts;
 use rsa::traits::PublicKeyParts;
 use sec1::DecodeEcPrivateKey as _;
 use sec1::LineEnding;
-use sec1::der::Tag;
 use sec1::der::Writer as _;
 use sec1::pem::PemLabel as _;
 use spki::DecodePublicKey as _;
@@ -2248,11 +2247,16 @@ impl AsymmetricPublicKey {
             let public_key_der = public_key_int
               .to_der()
               .map_err(|_| AsymmetricPublicKeyDerError::InvalidDhPublicKey)?;
-            let params = key.params.to_der().unwrap();
+            let params_der = key
+              .params
+              .to_der()
+              .map_err(|_| AsymmetricPublicKeyDerError::InvalidDhPublicKey)?;
+            let params = AnyRef::from_der(&params_der)
+              .map_err(|_| AsymmetricPublicKeyDerError::InvalidDhPublicKey)?;
             let spki = SubjectPublicKeyInfoRef {
               algorithm: rsa::pkcs8::AlgorithmIdentifierRef {
                 oid: DH_KEY_AGREEMENT_OID,
-                parameters: Some(AnyRef::new(Tag::Sequence, &params).unwrap()),
+                parameters: Some(params),
               },
               subject_public_key: BitStringRef::from_bytes(&public_key_der)
                 .map_err(|_| {
@@ -2580,11 +2584,16 @@ impl AsymmetricPrivateKey {
             let private_key_der = private_key_int
               .to_der()
               .map_err(|_| AsymmetricPrivateKeyDerError::InvalidDhPrivateKey)?;
-            let params = key.params.to_der().unwrap();
+            let params_der = key
+              .params
+              .to_der()
+              .map_err(|_| AsymmetricPrivateKeyDerError::InvalidDhPrivateKey)?;
+            let params = AnyRef::from_der(&params_der)
+              .map_err(|_| AsymmetricPrivateKeyDerError::InvalidDhPrivateKey)?;
             let private_key = PrivateKeyInfo {
               algorithm: rsa::pkcs8::AlgorithmIdentifierRef {
                 oid: DH_KEY_AGREEMENT_OID,
-                parameters: Some(AnyRef::new(Tag::Sequence, &params).unwrap()),
+                parameters: Some(params),
               },
               private_key: &private_key_der,
               public_key: None,
