@@ -1293,3 +1293,64 @@ Deno.test("WebSocket close with reason but no code doesn't send 1005", async () 
   conn.close();
   await server.finished;
 });
+
+Deno.test(async function websocketHandshakeFailureAbnormalCloseCode() {
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const port = (listener.addr as Deno.NetAddr).port;
+  listener.close();
+
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/`);
+  const { promise, resolve, reject } = Promise.withResolvers<CloseEvent>();
+  ws.onopen = () => reject(new Error("Unexpected WebSocket connection"));
+  ws.onerror = () => {};
+  ws.onclose = resolve;
+  const event = await promise;
+  assertEquals(event.code, 1006);
+  assertEquals(event.reason, "");
+  assertEquals(event.wasClean, false);
+});
+
+Deno.test(async function websocketUnexpectedDisconnectAbnormalCloseCode() {
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const port = (listener.addr as Deno.NetAddr).port;
+
+  const server = (async () => {
+    const conn = await listener.accept();
+    try {
+      const request = new Uint8Array(4096);
+      let total = 0;
+      let headers = "";
+      while (!headers.includes("\r\n\r\n")) {
+        const size = await conn.read(request.subarray(total));
+        assert(size !== null && size > 0);
+        total += size;
+        headers = new TextDecoder().decode(request.subarray(0, total));
+      }
+      const key = /sec-websocket-key:\s*(\S+)/i.exec(headers)?.[1];
+      assert(key);
+      const digest = await crypto.subtle.digest(
+        "SHA-1",
+        new TextEncoder().encode(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"),
+      );
+      const accept = btoa(String.fromCharCode(...new Uint8Array(digest)));
+      await conn.write(
+        new TextEncoder().encode(
+          `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+        ),
+      );
+    } finally {
+      conn.close();
+      listener.close();
+    }
+  })();
+
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/`);
+  const { promise, resolve } = Promise.withResolvers<CloseEvent>();
+  ws.onerror = () => {};
+  ws.onclose = resolve;
+  const event = await promise;
+  await server;
+  assertEquals(event.code, 1006);
+  assertEquals(event.reason, "");
+  assertEquals(event.wasClean, false);
+});
