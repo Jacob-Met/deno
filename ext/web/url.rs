@@ -111,9 +111,9 @@ fn parse_url(
   }
 }
 
-// The WHATWG parser treats three or more leading '/' or '\\' characters
-// as a network-path reference for non-file special schemes. rust-url rejects
-// these references, even though the equivalent '//host' parses correctly.
+// The WHATWG parser treats extra or newline-interrupted leading '/' or '\\'
+// characters as a network-path reference for non-file special schemes.
+// rust-url rejects these references, although '//host' parses correctly.
 fn normalize_network_authority_reference(
   href: &str,
   base: &Url,
@@ -124,15 +124,28 @@ fn normalize_network_authority_reference(
 
   // URL parsing removes leading C0 controls and spaces.
   let input = href.trim_start_matches(|c| c <= '\u{20}');
-  let separators = input
-    .bytes()
-    .take_while(|b| *b == b'/' || *b == b'\\')
-    .count();
-  if separators < 3 {
+  let mut separators = 0;
+  let mut prefix_end = 0;
+  let mut skipped_newline = false;
+  for (i, byte) in input.bytes().enumerate() {
+    match byte {
+      b'/' | b'\\' => separators += 1,
+      b'\t' | b'\r' | b'\n' => skipped_newline = true,
+      _ => break,
+    }
+    prefix_end = i + 1;
+  }
+  // rust-url already handles two adjacent separators. Handle extra ones and
+  // sequences interrupted by tabs or newlines (ignored by WHATWG URL parsing).
+  if separators < 2 || (separators == 2 && !skipped_newline) {
     return None;
   }
 
-  Some(format!("//{}", &input[separators..]))
+  let rest = input[prefix_end..]
+    .chars()
+    .filter(|c| !matches!(c, '\t' | '\r' | '\n'))
+    .collect::<String>();
+  Some(format!("//{rest}"))
 }
 
 // Keep in sync with parseSimpleSpecialUrl() in ext/web/00_url.js.
