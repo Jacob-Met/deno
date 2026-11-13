@@ -1,7 +1,11 @@
 import { Shape as Base } from "./shape.ts";
 import { Shape as Circle } from "./circle.ts";
 
-console.log(Base.name, Circle.name);
+console.log(new Base().constructor.name, new Circle().constructor.name);
+class ExplicitName {
+  static name = "unchanged";
+}
+console.log("explicit", ExplicitName.name);
 
 const worker = new Worker(new URL("./worker.ts", import.meta.url), {
   type: "module",
