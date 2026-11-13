@@ -2408,6 +2408,7 @@ declare module "http2" {
         const HTTP2_METHOD_VERSION_CONTROL: string;
         const HTTP_STATUS_CONTINUE: number;
         const HTTP_STATUS_SWITCHING_PROTOCOLS: number;
+        const HTTP_STATUS_EARLY_HINTS: number;
         const HTTP_STATUS_PROCESSING: number;
         const HTTP_STATUS_OK: number;
         const HTTP_STATUS_CREATED: number;
@@ -2450,7 +2451,7 @@ declare module "http2" {
         const HTTP_STATUS_UNPROCESSABLE_ENTITY: number;
         const HTTP_STATUS_LOCKED: number;
         const HTTP_STATUS_FAILED_DEPENDENCY: number;
-        const HTTP_STATUS_UNORDERED_COLLECTION: number;
+        const HTTP_STATUS_TOO_EARLY: number;
         const HTTP_STATUS_UPGRADE_REQUIRED: number;
         const HTTP_STATUS_PRECONDITION_REQUIRED: number;
         const HTTP_STATUS_TOO_MANY_REQUESTS: number;
