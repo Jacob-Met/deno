@@ -2188,6 +2188,14 @@ impl NetDescriptor {
       ));
     }
 
+    // IPv6 subnets are portless; accept the same CIDR notation as IPv4.
+    // Bare IPv6 addresses without a prefix still require square brackets.
+    if let Ok(subnet) = hostname.parse::<IpNet>()
+      && subnet.addr().is_ipv6()
+    {
+      return Ok(NetDescriptor(Host::IpSubnet(subnet), None));
+    }
+
     // If this is a IPv6 address enclosed in square brackets, parse it as such.
     if hostname.starts_with('[') {
       if let Some((ip, after)) = hostname.split_once(']') {
@@ -2199,6 +2207,14 @@ impl NetDescriptor {
               hostname: hostname.to_string(),
               ip: ip_str.to_string(),
             })?;
+        if let Some(prefix) = after.strip_prefix('/') {
+          let subnet =
+            format!("{ip_str}/{prefix}").parse::<IpNet>().map_err(|_| {
+              NetDescriptorParseError::InvalidHost(hostname.to_string())
+            })?;
+          return Ok(NetDescriptor(Host::IpSubnet(subnet), None));
+        }
+
         let port = if let Some(port) = after.strip_prefix(':') {
           let port = port.parse::<u16>().map_err(|_| {
             NetDescriptorParseError::InvalidPort {
@@ -7812,6 +7828,65 @@ mod tests {
     for (host, is_ok) in cases {
       assert_eq!(perms.check_net(&(host, None), "api").is_ok(), is_ok);
     }
+  }
+
+  #[test]
+  fn test_net_ipv6_subnet() {
+    // Both common IPv6 CIDR spellings must be valid for --allow-net and
+    // --deny-net, without relaxing the bracket requirement on single IPv6 IPs.
+    for (input, subnet) in [
+      ("fc00::/7", "fc00::/7"),
+      ("[fc00::]/7", "fc00::/7"),
+      ("[::1]/128", "::1/128"),
+      ("::1/128", "::1/128"),
+      ("[fe80::]/10", "fe80::/10"),
+    ] {
+      let expected =
+        NetDescriptor(Host::IpSubnet(subnet.parse().unwrap()), None);
+      assert_eq!(NetDescriptor::parse_for_list(input).unwrap(), expected);
+      assert_eq!(NetDescriptor::parse_for_query(input).unwrap(), expected);
+    }
+    for input in ["[::1]/129", "[::1]/", "[::1]/abc", "::1", "::"] {
+      assert!(NetDescriptor::parse_for_list(input).is_err(), "{input}");
+    }
+
+    set_prompter(Box::new(TestPrompter));
+    let parser = TestPermissionDescriptorParser;
+    let perms = Permissions::from_options(
+      &parser,
+      &PermissionsOptions {
+        allow_net: Some(vec![]),
+        deny_net: Some(svec!["fc00::/7", "[fe80::]/10"]),
+        ..Default::default()
+      },
+    )
+    .unwrap();
+    let mut perms = PermissionsContainer::new(Arc::new(parser), perms);
+    for (host, allowed) in [
+      ("fc00::1", false),
+      ("fdff::1", false),
+      ("fe80::abcd", false),
+      ("2001:db8::1", true),
+    ] {
+      assert_eq!(
+        perms.check_net(&(host, None), "api").is_ok(),
+        allowed,
+        "{host}"
+      );
+    }
+
+    let parser = TestPermissionDescriptorParser;
+    let perms = Permissions::from_options(
+      &parser,
+      &PermissionsOptions {
+        allow_net: Some(svec!["2001:db8::/32"]),
+        ..Default::default()
+      },
+    )
+    .unwrap();
+    let mut perms = PermissionsContainer::new(Arc::new(parser), perms);
+    assert!(perms.check_net(&("2001:db8::1", None), "api").is_ok());
+    assert!(perms.check_net(&("2001:db9::1", None), "api").is_err());
   }
 
   #[test]
