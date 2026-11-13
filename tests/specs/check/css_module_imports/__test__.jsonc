@@ -13,6 +13,10 @@
       "args": "check valid.ts",
       "output": "missing_unstable.out",
       "exitCode": 1
+    },
+    "check_all_valid_only": {
+      "args": "check --unstable-raw-imports --all valid.ts",
+      "output": "valid.out"
     }
   }
 }
