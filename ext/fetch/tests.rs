@@ -652,7 +652,96 @@ async fn test_fetch_send_no_decompress_preserves_raw_response() {
   assert_eq!(body, GZIP_HELLO_FROM_SERVER);
 }
 
+// Some real HTTPS servers send a close-delimited HTTP/1.1 response and
+// terminate the TCP connection without a TLS close_notify alert. Rustls
+// reports UnexpectedEof only after delivering all decrypted plaintext.
+// Accept EOF-delimited bodies without masking truncated framed responses.
+#[tokio::test]
+async fn test_https_unclean_eof_body() {
+  for use_proxy in [false, true] {
+    for (response, expected_body, should_succeed) in [
+    (
+      b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\ncomplete-body".as_slice(),
+      "complete-body",
+      true,
+    ),
+    (
+      b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\ncomplete-body".as_slice(),
+      "complete-body",
+      true,
+    ),
+    (
+      b"HTTP/1.1 200 OK\r\nContent-Length: 30\r\nConnection: close\r\n\r\ntruncated".as_slice(),
+      "",
+      false,
+    ),
+    (
+      b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\npart\r\n".as_slice(),
+      "",
+      false,
+    ),
+  ] {
+    install_default_crypto_provider();
+    let tls_config = deno_tls::rustls::server::ServerConfig::builder()
+      .with_no_client_auth()
+      .with_single_cert(
+        vec![EXAMPLE_CRT.into()],
+        PrivateKeyDer::try_from(EXAMPLE_KEY).unwrap(),
+      )
+      .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let response = response.to_vec();
+
+    let server = tokio::spawn(async move {
+      let (sock, _) = listener.accept().await.unwrap();
+      let mut tls = acceptor.accept(sock).await.unwrap();
+      let mut request = [0_u8; 4096];
+      let count = tls.read(&mut request).await.unwrap();
+      assert!(count > 0);
+      tls.write_all(&response).await.unwrap();
+      tls.flush().await.unwrap();
+      // Avoid the TLS close_notify sent by AsyncWrite::shutdown. Closing the
+      // underlying TCP socket reproduces a server that just drops TCP.
+      let (tcp, _tls_session) = tls.into_inner();
+      drop(tcp);
+    });
+
+    let proxy_addr = if use_proxy {
+      Some(create_http_proxy(addr).await)
+    } else {
+      None
+    };
+    let client = create_http_test_client_with_proxy(proxy_addr);
+    let request = http::Request::builder()
+      .uri(format!("https://localhost:{}/", addr.port()))
+      .body(crate::ReqBody::empty())
+      .unwrap();
+    let response = client.send(request).await.unwrap();
+    assert_eq!(response.status(), http::StatusCode::OK);
+    let body = response.collect().await;
+    if should_succeed {
+      assert_eq!(
+        body.unwrap().to_bytes(),
+        expected_body,
+        "complete response must survive missing TLS close_notify"
+      );
+    } else {
+      assert!(body.is_err(), "truncated HTTP framing must remain an error");
+    }
+    server.await.unwrap();
+    }
+  }
+}
+
 fn create_http_test_client() -> crate::Client {
+  create_http_test_client_with_proxy(None)
+}
+
+fn create_http_test_client_with_proxy(
+  proxy_addr: Option<SocketAddr>,
+) -> crate::Client {
   install_default_crypto_provider();
 
   create_http_client(
@@ -660,7 +749,10 @@ fn create_http_test_client() -> crate::Client {
     CreateHttpClientOptions {
       root_cert_store: None,
       ca_certs: vec![],
-      proxy: None,
+      proxy: proxy_addr.map(|addr| deno_tls::Proxy::Http {
+        url: format!("http://{addr}"),
+        basic_auth: None,
+      }),
       unsafely_ignore_certificate_errors: Some(vec![]),
       client_cert_chain_and_key: None,
       pool_max_idle_per_host: None,

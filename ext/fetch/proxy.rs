@@ -847,7 +847,7 @@ where
     cx: &mut Context<'_>,
     buf: hyper::rt::ReadBufCursor<'_>,
   ) -> Poll<Result<(), std::io::Error>> {
-    match *self {
+    let read = match *self {
       Proxied::PassThrough(ref mut p) => Pin::new(p).poll_read(cx, buf),
       Proxied::Tcp(ref mut p) => Pin::new(p).poll_read(cx, buf),
       Proxied::HttpTunneled(ref mut p) => Pin::new(p).poll_read(cx, buf),
@@ -861,6 +861,22 @@ where
         target_os = "macos"
       ))]
       Proxied::Vsock(ref mut p) => Pin::new(p).poll_read(cx, buf),
+    };
+    // A number of HTTP/1.1 servers close TCP without TLS close_notify.
+    // Rustls reports the omission after *all* plaintext has been delivered.
+    // Pass that specific EOF to Hyper so it can finish close-delimited bodies.
+    // Hyper still rejects incomplete Content-Length and chunked bodies: only
+    // HTTP framing can decide whether the body was complete.
+    match read {
+      Poll::Ready(Err(error))
+        if error.kind() == std::io::ErrorKind::UnexpectedEof
+          && error.to_string().starts_with(
+            "peer closed connection without sending TLS close_notify",
+          ) =>
+      {
+        Poll::Ready(Ok(()))
+      }
+      otherwise => otherwise,
     }
   }
 }
