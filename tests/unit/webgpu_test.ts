@@ -1143,6 +1143,66 @@ Deno.test({
   device.destroy();
 });
 
+// Regression test for https://github.com/denoland/deno/issues/37182.
+// Empty BufferSources have no backing store pointer, but writing zero bytes
+// must be a no-op rather than panicking inside the WebGPU op.
+Deno.test({
+  permissions: { env: true },
+  ignore: isWsl || isCIWithoutGPU,
+}, async function writeBufferAcceptsEmptyData() {
+  const adapter = await navigator.gpu.requestAdapter();
+  assert(adapter);
+  const device = await adapter.requestDevice();
+  const gpuBuffer = device.createBuffer({
+    size: 4,
+    usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(gpuBuffer, 0, new Uint8Array([1, 2, 3, 4]));
+
+  for (
+    const empty of [
+      new Uint8Array(0),
+      new Float64Array(0),
+      new ArrayBuffer(0),
+      new DataView(new ArrayBuffer(0)),
+      new Uint8Array(new ArrayBuffer(8), 8, 0),
+      new DataView(new ArrayBuffer(8), 8, 0),
+    ]
+  ) {
+    device.queue.writeBuffer(gpuBuffer, 0, empty);
+  }
+
+  for (const [offset, size] of [[1, undefined], [0, 1]] as const) {
+    const error = assertThrows(() =>
+      device.queue.writeBuffer(gpuBuffer, 0, new Uint8Array(0), offset, size)
+    );
+    assert(error instanceof DOMException);
+    assertEquals(error.name, "OperationError");
+  }
+
+  const detached = new ArrayBuffer(4);
+  structuredClone(detached, { transfer: [detached] });
+  assertThrows(
+    () => device.queue.writeBuffer(gpuBuffer, 0, detached),
+    TypeError,
+  );
+
+  const readBuffer = device.createBuffer({
+    size: 4,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  const encoder = device.createCommandEncoder();
+  encoder.copyBufferToBuffer(gpuBuffer, 0, readBuffer, 0, 4);
+  device.queue.submit([encoder.finish()]);
+  await readBuffer.mapAsync(GPUMapMode.READ);
+  assertEquals(
+    new Uint8Array(readBuffer.getMappedRange()),
+    new Uint8Array([1, 2, 3, 4]),
+  );
+  readBuffer.unmap();
+  device.destroy();
+});
+
 // Regression test for https://github.com/denoland/deno/issues/33956.
 // Before the fix, the Uint32Array fast path of setBindGroup sliced the
 // backing ArrayBuffer with an unchecked `&data[start..start+len]`. An

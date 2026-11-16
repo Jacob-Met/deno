@@ -140,55 +140,89 @@ impl GPUQueue {
   ) -> Result<(), JsErrorBox> {
     // Per the WebGPU spec, dataOffset and size are in elements (not bytes)
     // when data is a TypedArray, and in bytes otherwise.
-    let (buf, bytes_per_element) = if let Ok(typed_array) =
+    let (array_buffer, byte_offset, byte_len, bytes_per_element) = if let Ok(
+      typed_array,
+    ) =
       v8::Local::<v8::TypedArray>::try_from(data_arg)
     {
       let len = typed_array.length();
-      let bpe = (typed_array.byte_length()).checked_div(len).unwrap_or(1);
+      let bpe = typed_array.byte_length().checked_div(len).unwrap_or(1);
       let byte_offset = typed_array.byte_offset();
       let byte_len = typed_array.byte_length();
-      let ab = typed_array.buffer(scope).unwrap();
-      // SAFETY: Pointer is non-null, and V8 guarantees that the
-      // byte_offset is within the buffer backing store.
-      let ptr = unsafe { ab.data().unwrap().as_ptr().add(byte_offset) };
-      let buf =
-          // SAFETY: the slice is within the bounds of the backing store
-          unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len) };
-      (buf, bpe)
-    } else if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(data_arg) {
-      let byte_len = ab.byte_length();
-      let ptr = ab.data().unwrap().as_ptr();
-      let buf =
-        // SAFETY: Pointer is non-null and byte_len is within the backing store.
-        unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len) };
-      (buf, 1)
+      let array_buffer = typed_array
+        .buffer(scope)
+        .ok_or_else(|| JsErrorBox::type_error("data buffer is detached"))?;
+      (array_buffer, byte_offset, byte_len, bpe)
+    } else if let Ok(array_buffer) =
+      v8::Local::<v8::ArrayBuffer>::try_from(data_arg)
+    {
+      let byte_len = array_buffer.byte_length();
+      (array_buffer, 0, byte_len, 1)
     } else if let Ok(view) =
       v8::Local::<v8::ArrayBufferView>::try_from(data_arg)
     {
       let byte_offset = view.byte_offset();
       let byte_len = view.byte_length();
-      let ab = view.buffer(scope).unwrap();
-      // SAFETY: Pointer is non-null, and V8 guarantees that the
-      // byte_offset is within the buffer backing store.
-      let ptr = unsafe { ab.data().unwrap().as_ptr().add(byte_offset) };
-      // SAFETY: the slice is within the bounds of the backing store
-      let buf =
-        unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len) };
-      (buf, 1)
+      let array_buffer = view
+        .buffer(scope)
+        .ok_or_else(|| JsErrorBox::type_error("data buffer is detached"))?;
+      (array_buffer, byte_offset, byte_len, 1)
     } else {
       return Err(JsErrorBox::type_error(
         "data must be an ArrayBuffer or ArrayBufferView",
       ));
     };
 
-    let data_offset_bytes = data_offset as usize * bytes_per_element;
-    let data = match size {
-      Some(size) => {
-        let size_bytes = size as usize * bytes_per_element;
-        &buf[data_offset_bytes..(data_offset_bytes + size_bytes)]
+    if array_buffer.was_detached() {
+      return Err(JsErrorBox::type_error("data buffer is detached"));
+    }
+
+    // A zero-length ArrayBuffer has no backing store pointer. Constructing a
+    // zero-length slice from a null pointer is invalid even when never read.
+    let buf: &[u8] = if byte_len == 0 {
+      &[]
+    } else {
+      let ptr = array_buffer
+        .data()
+        .ok_or_else(|| JsErrorBox::type_error("data buffer is detached"))?;
+      // SAFETY: V8 guarantees the view's byte_offset and byte_len are within
+      // its backing store, which remains alive for this synchronous operation.
+      unsafe {
+        std::slice::from_raw_parts(
+          ptr.as_ptr().cast::<u8>().add(byte_offset),
+          byte_len,
+        )
       }
-      None => &buf[data_offset_bytes..],
     };
+
+    let data_offset_bytes = data_offset
+      .checked_mul(bytes_per_element as u64)
+      .and_then(|n| usize::try_from(n).ok())
+      .ok_or_else(|| {
+        JsErrorBox::new("DOMExceptionOperationError", "dataOffset is too large")
+      })?;
+    let end = if let Some(size) = size {
+      let size_bytes = size
+        .checked_mul(bytes_per_element as u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| {
+          JsErrorBox::new("DOMExceptionOperationError", "size is too large")
+        })?;
+      data_offset_bytes.checked_add(size_bytes).ok_or_else(|| {
+        JsErrorBox::new(
+          "DOMExceptionOperationError",
+          "dataOffset and size overflow",
+        )
+      })?
+    } else {
+      buf.len()
+    };
+    let data = buf.get(data_offset_bytes..end).ok_or_else(|| {
+      JsErrorBox::new(
+        "DOMExceptionOperationError",
+        "dataOffset and size exceed data length",
+      )
+    })?;
 
     let err = self
       .instance
