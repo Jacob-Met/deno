@@ -57,7 +57,7 @@ Deno.test({
     db.loadExtension(extensionPath);
 
     const stmt = db.prepare("SELECT test_func('Hello, World!') AS result");
-    const { result } = stmt.get();
+    const result = stmt.get()?.result;
     assertEquals(result, "Hello, World!");
 
     db.close();
@@ -92,5 +92,38 @@ Deno.test({
     }, Error);
 
     db.close();
+  },
+});
+
+Deno.test({
+  name:
+    "[node/sqlite] enableLoadExtension blocks a real extension across reopen",
+  ignore: !extensionExists,
+  permissions: { read: true, write: true, ffi: true },
+  fn() {
+    const db = new DatabaseSync(":memory:", { allowExtension: true });
+    try {
+      db.enableLoadExtension(false);
+      assertThrows(
+        () => db.loadExtension(extensionPath),
+        Error,
+        "Cannot load SQLite extensions when allowExtension is not enabled",
+      );
+
+      db.close();
+      db.open();
+      assertThrows(
+        () => db.loadExtension(extensionPath),
+        Error,
+        "Cannot load SQLite extensions when allowExtension is not enabled",
+      );
+
+      db.enableLoadExtension(true);
+      db.loadExtension(extensionPath);
+      const value = db.prepare("SELECT test_func('reopened') AS result").get();
+      assertEquals(value?.result, "reopened");
+    } finally {
+      db.close();
+    }
   },
 });

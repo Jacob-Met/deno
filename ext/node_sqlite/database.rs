@@ -653,6 +653,9 @@ pub struct DatabaseSync {
   location: String,
   ignore_next_sqlite_error: Rc<Cell<bool>>,
   authorizer_data: Rc<RefCell<Option<*mut AuthorizerData>>>,
+  // Current dynamic state; cannot override allow_extension from construction.
+  // Retain it across close/open so a disabled loader cannot become enabled.
+  enable_load_extension: Cell<bool>,
   // Non-zero while a user-defined callback is on the stack; close() refuses
   // to free the connection in that state to avoid a SQLite VDBE use-after-free.
   callback_depth: Rc<Cell<usize>>,
@@ -954,6 +957,7 @@ impl DatabaseSync {
       None
     };
 
+    let allow_ext = options.allow_extension;
     Ok(DatabaseSync {
       conn: Rc::new(RefCell::new(db)),
       statements: Rc::new(RefCell::new(Vec::new())),
@@ -962,6 +966,7 @@ impl DatabaseSync {
       options,
       ignore_next_sqlite_error: Rc::new(Cell::new(false)),
       authorizer_data: Rc::new(RefCell::new(None)),
+      enable_load_extension: Cell::new(allow_ext),
       callback_depth: Rc::new(Cell::new(0)),
       disable_attach: Rc::new(Cell::new(disable_attach)),
     })
@@ -980,6 +985,15 @@ impl DatabaseSync {
     }
 
     let (db, disable_attach) = open_db(state, &self.location, &self.options)?;
+    // open_db applies the construction-time allowExtension, but a previously
+    // disabled loader must stay disabled when the connection is reopened.
+    if !self.enable_load_extension.get() {
+      assert!(set_db_config(
+        &db,
+        SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION,
+        false
+      ));
+    }
     if self.options.enable_foreign_key_constraints {
       db.execute("PRAGMA foreign_keys = ON", [])?;
     } else {
@@ -1590,7 +1604,7 @@ impl DatabaseSync {
     let db = self.conn.borrow();
     let db = db.as_ref().ok_or(SqliteError::AlreadyClosed)?;
 
-    if !self.options.allow_extension {
+    if !self.options.allow_extension || !self.enable_load_extension.get() {
       return Err(SqliteError::LoadExensionFailed(
         "Cannot load SQLite extensions when allowExtension is not enabled"
           .to_string(),
@@ -1645,6 +1659,31 @@ impl DatabaseSync {
         "Unknown error loading SQLite extension".to_string(),
       ))
     }
+  }
+
+  // Mirror node:sqlite's dynamic extension-loading gate. The constructor's
+  // allowExtension option remains an upper bound: code cannot re-enable a
+  // loader that was forbidden when this DatabaseSync was constructed.
+  #[fast]
+  #[undefined]
+  fn enable_load_extension(
+    &self,
+    #[validate(validators::extension_allow_bool)] allow: bool,
+  ) -> Result<(), SqliteError> {
+    let db = self.conn.borrow();
+    let db = db.as_ref().ok_or(SqliteError::AlreadyClosed)?;
+
+    if allow && !self.options.allow_extension {
+      return Err(SqliteError::ExtensionLoadingDeniedAtCreation);
+    }
+
+    assert!(set_db_config(
+      db,
+      SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION,
+      allow
+    ));
+    self.enable_load_extension.set(allow);
+    Ok(())
   }
 
   // Creates and attaches a session to the database.

@@ -165,6 +165,19 @@ pub(super) fn return_arrays_bool(
   ))
 }
 
+pub(super) fn extension_allow_bool(
+  _: &mut v8::PinScope<'_, '_>,
+  value: v8::Local<v8::Value>,
+) -> Result<(), Error> {
+  if value.is_boolean() {
+    return Ok(());
+  }
+
+  Err(Error::InvalidArgType(
+    "The \"allow\" argument must be a boolean.".into(),
+  ))
+}
+
 pub(super) fn active_bool(
   _: &mut v8::PinScope<'_, '_>,
   value: v8::Local<v8::Value>,

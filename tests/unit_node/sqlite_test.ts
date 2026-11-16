@@ -2007,3 +2007,101 @@ Deno.test("SQLTagStore invalidated iterator does not reset a live one", () => {
   assertStrictEquals(second.next().value.text, "alice");
   assertStrictEquals(second.next().done, true);
 });
+
+// https://github.com/denoland/deno/issues/30218
+Deno.test("[node/sqlite] enableLoadExtension cannot override constructor deny", () => {
+  using db = new DatabaseSync(":memory:");
+  assertEquals(typeof db.enableLoadExtension, "function");
+  assertEquals(db.enableLoadExtension(false), undefined);
+  const error = assertThrows(
+    () => db.enableLoadExtension(true),
+    Error,
+    "Cannot enable extension loading because it was disabled at database creation.",
+  );
+  assertEquals((error as Error & { code?: string }).code, "ERR_INVALID_STATE");
+});
+
+Deno.test("[node/sqlite] enableLoadExtension requires a boolean", () => {
+  using db = new DatabaseSync(":memory:");
+  for (const input of [undefined, null, 0, 1, "true", [], {}]) {
+    const error = assertThrows(
+      () => db.enableLoadExtension(input as unknown as boolean),
+      TypeError,
+      'The "allow" argument must be a boolean.',
+    );
+    assertEquals(
+      (error as Error & { code?: string }).code,
+      "ERR_INVALID_ARG_TYPE",
+    );
+  }
+});
+
+Deno.test("[node/sqlite] enableLoadExtension rejects use after close", () => {
+  const db = new DatabaseSync(":memory:");
+  db.close();
+  assertThrows(
+    () => db.enableLoadExtension(false),
+    Error,
+    "database is not open",
+  );
+});
+
+Deno.test({
+  name:
+    "[node/sqlite] enableLoadExtension prevents loading and supports re-enable",
+  permissions: { read: true, write: true, ffi: true },
+  fn() {
+    using db = new DatabaseSync(":memory:", { allowExtension: true });
+    const path = "/path/to/no/such/extension";
+    db.enableLoadExtension(false);
+    assertThrows(
+      () => db.loadExtension(path),
+      Error,
+      "Cannot load SQLite extensions when allowExtension is not enabled",
+    );
+    db.enableLoadExtension(true);
+    try {
+      db.loadExtension(path);
+      throw new Error("expected a missing shared-library error");
+    } catch (error) {
+      assert(
+        !(error instanceof Error &&
+          error.message.includes("allowExtension is not enabled")),
+        "dynamic loader was not re-enabled",
+      );
+      assert(error instanceof Error);
+      assert(
+        error.message.includes("No such file") ||
+          error.message.includes("cannot open") ||
+          error.message.includes("could not be found") ||
+          error.message.includes("Failed to load"),
+      );
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "[node/sqlite] enableLoadExtension stays disabled across close and reopen",
+  permissions: { read: true, write: true, ffi: true },
+  fn() {
+    const db = new DatabaseSync(":memory:", { allowExtension: true });
+    db.enableLoadExtension(false);
+    db.close();
+    db.open();
+    try {
+      assertThrows(
+        () => db.loadExtension("/path/to/no/such/extension"),
+        Error,
+        "Cannot load SQLite extensions when allowExtension is not enabled",
+      );
+      db.enableLoadExtension(true);
+      assertThrows(
+        () => db.loadExtension("/path/to/no/such/extension"),
+        Error,
+      );
+    } finally {
+      db.close();
+    }
+  },
+});
