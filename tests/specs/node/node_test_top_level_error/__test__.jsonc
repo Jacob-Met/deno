@@ -1,0 +1,34 @@
+{
+  "steps": [
+    {
+      "args": "run --no-check main.ts",
+      "output": "run.out",
+      "exitCode": 1
+    },
+    {
+      "args": "test --no-check main.ts",
+      "output": "test.out",
+      "exitCode": 1
+    },
+    {
+      "args": "run --no-check --allow-read main.cjs",
+      "output": "run.out",
+      "exitCode": 1
+    },
+    {
+      "args": "test --no-check --allow-read main.cjs",
+      "output": "test_cjs.out",
+      "exitCode": 1
+    },
+    {
+      "args": "run --no-check main_suite.ts",
+      "output": "run.out",
+      "exitCode": 1
+    },
+    {
+      "args": "test --no-check main_suite.ts",
+      "output": "test_suite.out",
+      "exitCode": 1
+    }
+  ]
+}
