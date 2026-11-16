@@ -874,7 +874,7 @@ pub async fn bundle_for_compile(
     external,
     format: BundleFormat::Esm,
     minify,
-    keep_names: false,
+    keep_names: true,
     code_splitting: false,
     inline_imports: true,
     packages: PackageHandling::Bundle,
