@@ -12,6 +12,37 @@ use deno_core::webidl::WebIdlError;
 use deno_core::webidl::WebIdlErrorKind;
 use deno_error::JsErrorBox;
 
+/// Borrow the exact Uint32Array view used for WebGPU dynamic offsets.
+/// A zero-length view has no V8 backing-store pointer, so it must yield an
+/// empty slice without constructing a Rust slice from a null pointer.
+pub(crate) fn uint32_array_slice<'a, 's>(
+  scope: &'s mut v8::PinScope<'a, '_>,
+  view: v8::Local<'a, v8::Uint32Array>,
+) -> Option<&'s [u32]> {
+  let buffer = view.buffer(scope)?;
+  if buffer.was_detached() {
+    return None;
+  }
+  let len = view.length();
+  if len == 0 {
+    return Some(&[]);
+  }
+  let ptr = buffer.data()?;
+  // SAFETY: V8 validates that a Uint32Array's byte offset and element count
+  // fit its backing ArrayBuffer; its byte offset is u32-aligned. The view and
+  // buffer remain rooted for this synchronous call through the PinScope.
+  Some(unsafe {
+    std::slice::from_raw_parts(
+      ptr
+        .as_ptr()
+        .cast::<u8>()
+        .add(view.byte_offset())
+        .cast::<u32>(),
+      len,
+    )
+  })
+}
+
 #[derive(WebIDL)]
 #[webidl(dictionary)]
 pub(crate) struct GPUExtent3DDict {
