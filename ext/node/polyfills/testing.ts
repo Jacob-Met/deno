@@ -82,6 +82,10 @@ let errorHandlersInstalled = false;
 
 let activeNodeTests = 0;
 
+// Registered Deno-backed node tests do not run until module loading finishes.
+// Do not suppress errors during that initial module evaluation.
+let hasStartedDenoNodeTest = false;
+
 let pendingCallbackReject = null;
 
 // Stack of failure "sinks" for the tests whose bodies are currently executing.
@@ -174,9 +178,10 @@ function installErrorHandlers() {
       sink.fail(event.reason);
       return;
     }
-    // Preserve the prior behavior of swallowing rejections while Deno.test
-    // backed node tests are pending but no body is actively running.
-    if (activeNodeTests > 0) {
+    // Keep the test runner alive for late rejections from a completed test.
+    // Before any test body has run, a rejection can instead be a module-load
+    // failure (such as a throw after test() registration) and must be fatal.
+    if (hasStartedDenoNodeTest && activeNodeTests > 0) {
       event.preventDefault();
     }
   });
@@ -1936,6 +1941,7 @@ function prepareOptions(name, options, fn, overrides) {
 
 function wrapTestFn(fn, resolve, name, options) {
   return async function (t) {
+    hasStartedDenoNodeTest = true;
     const nodeTestContext = new NodeTestContext(
       t,
       undefined,
@@ -2006,6 +2012,7 @@ function prepareDenoTest(name, options, fn, overrides) {
 
 function wrapSuiteFn(fn, resolve, name, parentNodeContext, parentSuite, tags) {
   return async function (t) {
+    hasStartedDenoNodeTest = true;
     const isTopLevel = parentNodeContext === undefined;
     if (isTopLevel) await runRootBeforeOnce();
     const suiteNodeContext = new NodeTestContext(
