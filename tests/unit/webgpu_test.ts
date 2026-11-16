@@ -1203,6 +1203,67 @@ Deno.test({
   device.destroy();
 });
 
+// Empty dynamic-offset arrays must work for every setBindGroup fast path.
+// Before this fix, each path unwrapped a missing V8 backing-store pointer and
+// panicked even though an empty offset array is legal.
+Deno.test({
+  permissions: { read: true, env: true },
+  ignore: isWsl || isCIWithoutGPU,
+}, async function webgpuSetBindGroupEmptyOffsets() {
+  const adapter = await navigator.gpu.requestAdapter();
+  assert(adapter);
+  const device = await adapter.requestDevice();
+  const layout = device.createBindGroupLayout({ entries: [] });
+  const bg = device.createBindGroup({ layout, entries: [] });
+  const texture = device.createTexture({
+    size: [1, 1],
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+
+  for (
+    const offsets of [
+      new Uint32Array(0),
+      new Uint32Array(new ArrayBuffer(8), 8, 0),
+    ]
+  ) {
+    const encoder = device.createCommandEncoder();
+    const compute = encoder.beginComputePass();
+    compute.setBindGroup(0, bg, offsets, 0, 0);
+    compute.end();
+
+    const render = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: texture.createView(),
+        loadOp: "clear",
+        storeOp: "store",
+      }],
+    });
+    render.setBindGroup(0, bg, offsets, 0, 0);
+    render.end();
+
+    const bundle = device.createRenderBundleEncoder({
+      colorFormats: ["rgba8unorm"],
+    });
+    bundle.setBindGroup(0, bg, offsets, 0, 0);
+    bundle.finish();
+  }
+
+  const detached = new Uint32Array(2);
+  structuredClone(detached.buffer, { transfer: [detached.buffer] });
+  {
+    const pass = device.createCommandEncoder().beginComputePass();
+    assertThrows(() => pass.setBindGroup(0, bg, detached, 0, 0), TypeError);
+  }
+  {
+    const pass = device.createRenderBundleEncoder({
+      colorFormats: ["rgba8unorm"],
+    });
+    assertThrows(() => pass.setBindGroup(0, bg, detached, 0, 0), TypeError);
+  }
+  device.destroy();
+});
+
 // Regression test for https://github.com/denoland/deno/issues/33956.
 // Before the fix, the Uint32Array fast path of setBindGroup sliced the
 // backing ArrayBuffer with an unchecked `&data[start..start+len]`. An

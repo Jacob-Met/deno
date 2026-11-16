@@ -187,7 +187,6 @@ impl GPUComputePassEncoder {
         },
       )? as usize;
 
-      let view_byte_offset = uint_32.byte_offset();
       let view_len = uint_32.length();
 
       // Validate `start..start+len` against the **view** length, not the
@@ -202,22 +201,16 @@ impl GPUComputePassEncoder {
         return Ok(());
       };
 
-      let ab = uint_32.buffer(scope).unwrap();
-      let ptr = ab.data().unwrap();
-
-      // SAFETY: `ptr` is the start of the backing ArrayBuffer's data; the
-      // Uint32Array constructor guarantees `byte_offset + view_len * 4`
-      // fits within `byte_length`, so the resulting slice covers exactly
-      // the view's window. `data` is dropped at the end of this call;
-      // `ab` keeps the backing buffer alive for that duration.
-      // compute_pass_set_bind_group internally calls extend_from_slice
-      // with this slice.
-      let data = unsafe {
-        std::slice::from_raw_parts(
-          (ptr.as_ptr() as *const u8).add(view_byte_offset) as *const u32,
-          view_len,
-        )
-      };
+      let data =
+        crate::webidl::uint32_array_slice(scope, uint_32).ok_or_else(|| {
+          WebIdlError::other(
+            Cow::Borrowed(PREFIX),
+            (|| Cow::Borrowed("Argument 3")).into(),
+            deno_error::JsErrorBox::type_error(
+              "dynamicOffsetsData is detached",
+            ),
+          )
+        })?;
 
       let offsets = &data[start..end];
 
