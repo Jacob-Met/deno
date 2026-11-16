@@ -67,9 +67,7 @@ impl<'a> WindowedLintDiagnostic<'a> {
     // Only scan as far as the threshold, then find the window from the
     // diagnostic offset. A megabyte-long minified line must not be rescanned
     // and allocated once for each of its hundreds of lint errors.
-    if line.chars().nth(MAX_SOURCE_CHARS).is_none() {
-      return None;
-    }
+    line.chars().nth(MAX_SOURCE_CHARS)?;
 
     let start_offset =
       range.range.start - original_source.line_start(line_index);
