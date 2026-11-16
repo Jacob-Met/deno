@@ -1,6 +1,17 @@
 // Copyright 2018-2026 the Deno authors. MIT license.
 
+use std::borrow::Cow;
+use std::collections::HashSet;
+
+use deno_ast::SourceTextInfo;
 use deno_ast::diagnostics::Diagnostic;
+use deno_ast::diagnostics::DiagnosticLevel;
+use deno_ast::diagnostics::DiagnosticLocation;
+use deno_ast::diagnostics::DiagnosticSnippet;
+use deno_ast::diagnostics::DiagnosticSnippetHighlight;
+use deno_ast::diagnostics::DiagnosticSnippetHighlightStyle;
+use deno_ast::diagnostics::DiagnosticSourcePos;
+use deno_ast::diagnostics::DiagnosticSourceRange;
 use deno_core::error::AnyError;
 use deno_core::serde_json;
 use deno_lib::util::result::js_error_downcast_ref;
@@ -28,9 +39,141 @@ pub trait LintReporter {
   fn close(&mut self, check_count: usize);
 }
 
+// Keep the diagnostic's real location, rule, and hint while showing only the
+// source around its highlight. Long minified lines otherwise render in full
+// once for every lint error, producing quadratic amounts of terminal output.
+struct WindowedLintDiagnostic<'a> {
+  original: &'a LintDiagnostic,
+  source: SourceTextInfo,
+  highlight_start: usize,
+  highlight_end: usize,
+  line_index: usize,
+}
+
+impl<'a> WindowedLintDiagnostic<'a> {
+  fn new(original: &'a LintDiagnostic) -> Option<Self> {
+    const MAX_SOURCE_CHARS: usize = 240;
+    const CONTEXT_BEFORE: usize = 60;
+    const CONTEXT_AFTER: usize = 100;
+    const ELLIPSIS: &str = "…";
+
+    let range = original.range.as_ref()?;
+    let original_source = &range.text_info;
+    let line_index = original_source.line_index(range.range.start);
+    if original_source.line_index(range.range.end) != line_index {
+      return None; // Leave multiline diagnostics unchanged.
+    }
+    let line = original_source.line_text(line_index);
+    // Only scan as far as the threshold, then find the window from the
+    // diagnostic offset. A megabyte-long minified line must not be rescanned
+    // and allocated once for each of its hundreds of lint errors.
+    if line.chars().nth(MAX_SOURCE_CHARS).is_none() {
+      return None;
+    }
+
+    let start_offset =
+      range.range.start - original_source.line_start(line_index);
+    let end_offset = range.range.end - original_source.line_start(line_index);
+    if !line.is_char_boundary(start_offset) {
+      return None;
+    }
+    let first_byte = line[..start_offset]
+      .char_indices()
+      .rev()
+      .nth(CONTEXT_BEFORE - 1)
+      .map(|(offset, _)| offset)
+      .unwrap_or(0);
+    let last_byte = line[start_offset..]
+      .char_indices()
+      .nth(CONTEXT_AFTER)
+      .map(|(offset, _)| start_offset + offset)
+      .unwrap_or(line.len());
+
+    let prefix = if first_byte > 0 { ELLIPSIS } else { "" };
+    let suffix = if last_byte < line.len() { ELLIPSIS } else { "" };
+    let snippet_line =
+      format!("{prefix}{}{suffix}", &line[first_byte..last_byte]);
+    // Retain the original line number in the excerpt's gutter, while the
+    // location in the diagnostic itself uses the untouched source.
+    let source = SourceTextInfo::from_string(format!(
+      "{}{snippet_line}",
+      "\n".repeat(line_index)
+    ));
+    let prefix_len = prefix.len();
+    let highlight_start = prefix_len + start_offset - first_byte;
+    let highlight_end =
+      prefix_len + end_offset.min(last_byte).max(start_offset) - first_byte;
+
+    Some(Self {
+      original,
+      source,
+      highlight_start,
+      highlight_end,
+      line_index,
+    })
+  }
+}
+
+impl Diagnostic for WindowedLintDiagnostic<'_> {
+  fn level(&self) -> DiagnosticLevel {
+    self.original.level()
+  }
+
+  fn code(&self) -> Cow<'_, str> {
+    self.original.code()
+  }
+
+  fn message(&self) -> Cow<'_, str> {
+    self.original.message()
+  }
+
+  fn location(&self) -> DiagnosticLocation<'_> {
+    self.original.location()
+  }
+
+  fn snippet(&self) -> Option<DiagnosticSnippet<'_>> {
+    let line_start = self.source.line_start(self.line_index);
+    Some(DiagnosticSnippet {
+      source: Cow::Borrowed(&self.source),
+      highlights: vec![DiagnosticSnippetHighlight {
+        range: DiagnosticSourceRange {
+          start: DiagnosticSourcePos::SourcePos(
+            line_start + self.highlight_start,
+          ),
+          end: DiagnosticSourcePos::SourcePos(line_start + self.highlight_end),
+        },
+        style: DiagnosticSnippetHighlightStyle::Error,
+        description: self
+          .original
+          .range
+          .as_ref()
+          .and_then(|range| range.description.as_deref())
+          .map(Cow::Borrowed),
+      }],
+    })
+  }
+
+  fn hint(&self) -> Option<Cow<'_, str>> {
+    self.original.hint()
+  }
+
+  fn snippet_fixed(&self) -> Option<DiagnosticSnippet<'_>> {
+    self.original.snippet_fixed()
+  }
+
+  fn info(&self) -> Cow<'_, [Cow<'_, str>]> {
+    self.original.info()
+  }
+
+  fn docs_url(&self) -> Option<Cow<'_, str>> {
+    self.original.docs_url()
+  }
+}
+
 struct PrettyLintReporter {
   lint_count: u32,
   fixable_diagnostics: u32,
+  shortened_files: HashSet<String>,
 }
 
 impl PrettyLintReporter {
@@ -38,6 +181,7 @@ impl PrettyLintReporter {
     PrettyLintReporter {
       lint_count: 0,
       fixable_diagnostics: 0,
+      shortened_files: HashSet::new(),
     }
   }
 }
@@ -49,7 +193,16 @@ impl LintReporter for PrettyLintReporter {
       self.fixable_diagnostics += 1;
     }
 
-    log::error!("{}\n", d.display());
+    if let Some(window) = WindowedLintDiagnostic::new(d) {
+      if self.shortened_files.insert(d.specifier.to_string()) {
+        log::warn!(
+          "Long source line shortened in diagnostics. If this is generated code, exclude it using `lint.exclude` in deno.json."
+        );
+      }
+      log::error!("{}\n", window.display());
+    } else {
+      log::error!("{}\n", d.display());
+    }
   }
 
   fn visit_error(&mut self, file_path: &str, err: &AnyError) {
