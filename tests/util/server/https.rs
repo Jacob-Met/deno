@@ -23,7 +23,8 @@ pub async fn get_tcp_listener_stream(
 ) -> impl Stream<Item = Result<TcpStream, std::io::Error>> + Unpin + Send {
   let host_and_port = &format!("localhost:{port}");
 
-  // Listen on ALL addresses that localhost can resolves to.
+  // Only bind loopback addresses. VPN tools can add non-loopback aliases
+  // for localhost, which would make the test server fail to start.
   let accept = |listener: tokio::net::TcpListener| {
     async {
       let result = listener.accept().await;
@@ -36,6 +37,7 @@ pub async fn get_tcp_listener_stream(
   let listeners = tokio::net::lookup_host(host_and_port)
     .await
     .expect(host_and_port)
+    .filter(|address| address.ip().is_loopback())
     .inspect(|address| addresses.push(*address))
     .map(tokio::net::TcpListener::bind)
     .collect::<futures::stream::FuturesUnordered<_>>()
@@ -45,6 +47,11 @@ pub async fn get_tcp_listener_stream(
     .map(|s| s.unwrap())
     .map(|listener| futures::stream::unfold(listener, accept))
     .collect::<Vec<_>>();
+
+  assert!(
+    !addresses.is_empty(),
+    "localhost:{port} did not resolve to any loopback addresses"
+  );
 
   // Eye catcher for HttpServerCount
   test_util::println!("ready: {name} on {:?}", addresses);
