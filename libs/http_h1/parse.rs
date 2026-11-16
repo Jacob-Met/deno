@@ -185,7 +185,7 @@ fn finish_request_head<'a>(
 
   let keep_alive = header_info.keep_alive(version);
   let body_kind = header_info.body_kind(method, version)?;
-  header_info.validate_host(version, body_kind, allow_missing_host)?;
+  header_info.validate_host(version, allow_missing_host)?;
   let expect_continue = header_info.expect_continue;
 
   Ok(Some(RequestHead {
@@ -245,7 +245,7 @@ fn finish_request_head_uninit<'a>(
 
   let keep_alive = header_info.keep_alive(version);
   let body_kind = header_info.body_kind(method, version)?;
-  header_info.validate_host(version, body_kind, allow_missing_host)?;
+  header_info.validate_host(version, allow_missing_host)?;
   let expect_continue = header_info.expect_continue;
 
   Ok(Some(RequestHead {
@@ -357,7 +357,6 @@ impl HeaderInfo {
   fn validate_host(
     &self,
     version: Version,
-    body_kind: BodyKind,
     allow_missing_host: bool,
   ) -> Result<(), ParseError> {
     if version != Version::Http11 {
@@ -365,7 +364,6 @@ impl HeaderInfo {
     }
     match self.host_count {
       0 if allow_missing_host => Ok(()),
-      0 if body_kind == BodyKind::Empty => Ok(()),
       0 => Err(ParseError::MissingHost),
       1 => Ok(()),
       _ => Err(ParseError::MultipleHost),
@@ -699,6 +697,31 @@ mod tests {
         &mut headers
       ),
       Err(ParseError::MissingHost)
+    );
+  }
+
+  #[test]
+  fn rejects_missing_http11_host_without_body() {
+    for request in [
+      b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n".as_slice(),
+      b"HEAD / HTTP/1.1\r\n\r\n",
+      b"GET http://example.test/ HTTP/1.1\r\n\r\n",
+      b"OPTIONS * HTTP/1.1\r\n\r\n",
+    ] {
+      let mut headers = [Header::EMPTY; 8];
+      assert_eq!(
+        parse_request_head(request, &mut headers),
+        Err(ParseError::MissingHost)
+      );
+    }
+    let mut headers = [Header::EMPTY; 8];
+    assert!(
+      parse_request_head(
+        b"GET / HTTP/1.0\r\nConnection: close\r\n\r\n",
+        &mut headers
+      )
+      .unwrap()
+      .is_some()
     );
   }
 

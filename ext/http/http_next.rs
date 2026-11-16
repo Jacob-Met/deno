@@ -4538,7 +4538,6 @@ async fn serve_http11_raw(
   automatic_compression: bool,
 ) -> Result<(), HttpNextError> {
   let mut conn = h1::SharedConn::new(io);
-  conn.set_allow_missing_host(true);
   let mut scratch = h1::SharedScratch::default();
   let store_request = !callback.raw_no_request();
   loop {
