@@ -70,24 +70,27 @@ impl GPURenderBundleEncoder {
   fn finish(
     &self,
     #[webidl] descriptor: GPURenderBundleDescriptor,
-  ) -> GPURenderBundle {
+  ) -> Result<GPURenderBundle, JsErrorBox> {
     let wgpu_descriptor = wgpu_core::command::RenderBundleDescriptor {
       label: crate::transform_label(descriptor.label.clone()),
     };
 
+    let encoder = self.encoder.borrow_mut().take().ok_or_else(|| {
+      JsErrorBox::generic("Encoder has already been finished")
+    })?;
     let (id, err) = self.instance.render_bundle_encoder_finish(
-      self.encoder.borrow_mut().take().unwrap(),
+      encoder,
       &wgpu_descriptor,
       None,
     );
 
     self.error_handler.push_error(err);
 
-    GPURenderBundle {
+    Ok(GPURenderBundle {
       instance: self.instance.clone(),
       id,
       label: descriptor.label.clone(),
-    }
+    })
   }
 
   #[undefined]

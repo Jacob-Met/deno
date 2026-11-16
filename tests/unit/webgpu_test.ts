@@ -1215,3 +1215,22 @@ async function checkIsWsl() {
     }
   }
 }
+
+// Finishing a render bundle twice is a recoverable JavaScript error, not a
+// Rust panic which terminates the entire Deno process.
+Deno.test({
+  permissions: { read: true, env: true },
+  ignore: isWsl || isCIWithoutGPU,
+}, async function webgpuRenderBundleDoubleFinish() {
+  const adapter = await navigator.gpu.requestAdapter();
+  assert(adapter);
+  const device = await adapter.requestDevice();
+  const encoder = device.createRenderBundleEncoder({
+    colorFormats: ["rgba8unorm"],
+  });
+  const bundle = encoder.finish();
+  assert(bundle);
+  const error = assertThrows(() => encoder.finish(), Error);
+  assertEquals(error.message, "Encoder has already been finished");
+  device.destroy();
+});
